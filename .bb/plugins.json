@@ -3,9 +3,25 @@
   "schemaVersion": 1,
   "name": "mttmcknn-bb-plugins",
   "plugins": [
-    { "name": "android-emulator", "source": "./plugins/android-emulator" },
-    { "name": "env-panel", "source": "./plugins/env-panel" },
-    { "name": "inbox", "source": "./plugins/inbox" },
-    { "name": "pr-stacks", "source": "./plugins/pr-stacks" }
+    {
+      "name": "android-emulator",
+      "source": "./plugins/android-emulator"
+    },
+    {
+      "name": "env-panel",
+      "source": "./plugins/env-panel"
+    },
+    {
+      "name": "inbox",
+      "source": "./plugins/inbox"
+    },
+    {
+      "name": "pr-stacks",
+      "source": "./plugins/pr-stacks"
+    },
+    {
+      "name": "thread-diff-viewer",
+      "source": "./plugins/thread-diff-viewer"
+    }
   ]
 }

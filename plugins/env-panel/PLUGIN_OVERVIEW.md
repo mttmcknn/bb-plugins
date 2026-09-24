@@ -5,8 +5,11 @@ floating panel inspired by the Codex app.
 
 - **In Thread info**, below bb's own rows: the GitHub stack and
   Attachments.
-- **A floating panel**: open it from the branch button in the thread header.
-  It's draggable and remembers its position.
+- **A panel beside the chat**, like the Codex app. It opens by itself when
+  the thread has room for it next to the full-width chat, and the chat moves
+  over to make room. Close it and it stays closed until you click the header
+  button again. In a narrow window, the header button shows it over the chat
+  instead; click anywhere else to dismiss it.
   - **Environment**: changes, worktree, branch, ahead/behind, and Commit.
   - **Pull request**: checks and review state, Ready for review, and one-click
     "Ask agent to fix CI" or "Address review".
@@ -25,6 +28,21 @@ floating panel inspired by the Codex app.
   - **Images**: thumbnails of linked images and thread-storage images.
   - **Files** in thread storage.
 - `bb env-panel` prints the same snapshot for agents and terminals.
+
+## Control Center grid and widgets
+
+The panel is a grid of tiles, like Control Center. Each tile shows one thing
+at a glance: changes, the PR and its checks, the stack's CI as a dot rail,
+context usage, tasks, subagents, schedules, the Linear ticket, and
+attachments. Tap a tile to expand it into its full detail. Action tiles
+(Commit, Fix CI) act on tap. **Edit** hides, resizes, reorders, and adds
+tiles; your layout is remembered.
+
+Add your own tiles with **widgets**: small scripts in
+`~/.config/bb-env-panel/widgets/` that print JSON (`bb env-panel widgets new`
+starts one, and agents can write them for you), or other bb plugins that
+publish `env-panel.widgets.v1.render`. An Android devices widget, powered by
+`adb`, ships as a template.
 
 ## Setup
 

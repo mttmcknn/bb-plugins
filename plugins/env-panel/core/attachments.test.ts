@@ -34,6 +34,11 @@ test("collapses URLs that name the same thing and keeps newest first", () => {
   assert.deepEqual(refs.map((ref) => ref.id), ["github:acme/app#149", "linear:ENG-1"]);
 });
 
+test("treats a repo's clone URL and page as one link", () => {
+  const refs = extractLinks(["https://github.com/acme/app and https://github.com/acme/app.git"], 10);
+  assert.equal(refs.length, 1);
+});
+
 test("suggests Linear keys from branch names without version noise", () => {
   assert.deepEqual(linearKeysFromBranch("me/eng-123-fix-login"), ["ENG-123"]);
   assert.deepEqual(linearKeysFromBranch("octocat/checkout-v3-06-summary"), []);

@@ -5,7 +5,7 @@
 // portals the stack and attachments into BB's own Thread
 // info tab. All three read one per-thread snapshot store, so nothing fetches
 // twice.
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type PointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   definePluginApp,
@@ -13,15 +13,18 @@ import {
   Markdown,
   UrlLink,
   useBbContext,
+  useBbNavigate,
   useRealtime,
   useRpc,
   useSettings,
 } from "@get-bb/plugin-sdk/app";
 import { toast } from "sonner";
-import GitBranchIcon from "@hugeicons/core-free-icons/GitBranchIcon";
+import "./app.css";
+import DashboardSquare02Icon from "@hugeicons/core-free-icons/DashboardSquare02Icon";
 import type { rpcContract, Snapshot } from "./server";
 import { cn } from "@/lib/utils";
-import { DiffStat, Icon, PanelBody, PanelFrame, ThreadInfoExtras, type AgentAction, type PanelActions } from "./views/panel";
+import { BentoPanel, builtInTiles, widgetTiles } from "./views/bento";
+import { DiffStat, Icon, PanelFrame, ThreadInfoExtras, type AgentAction, type PanelActions } from "./views/panel";
 
 type Rpc = ReturnType<typeof useRpc<typeof rpcContract>>;
 
@@ -90,56 +93,72 @@ function useSnapshot(threadId: string, options: { poll: boolean }) {
   return { ...entry, rpc, refresh };
 }
 
-// ---- Panel open state and position (per app window, remembered) --------
+// ---- Panel visibility (per app window, remembered) ------------------------
+//
+// "auto" (the default) shows the panel whenever the chat has room for it and
+// hides it when it does not. "closed" is the user closing a docked panel; it
+// stays closed until they open it again. "open" is the user asking for the
+// panel in a pane too narrow to dock it, so it overlays the chat.
 
-const OPEN_KEY = "bb-env-panel:open";
-const POSITION_KEY = "bb-env-panel:position";
+type PanelMode = "auto" | "open" | "closed";
 
-interface Position {
-  right: number;
-  top: number;
+const MODE_KEY = "bb-env-panel:mode";
+
+function readMode(): PanelMode {
+  const saved = localStorage.getItem(MODE_KEY);
+  return saved === "closed" ? "closed" : "auto";
 }
 
-let panelOpen = localStorage.getItem(OPEN_KEY) === "true";
-const openListeners = new Set<() => void>();
+const panel = { mode: readMode(), hasRoom: false };
+const panelListeners = new Set<() => void>();
+let panelVersion = 0;
 
-function setPanelOpen(next: boolean) {
-  panelOpen = next;
-  localStorage.setItem(OPEN_KEY, String(next));
-  for (const listener of openListeners) listener();
+function publish() {
+  panelVersion += 1;
+  for (const listener of panelListeners) listener();
 }
 
-function usePanelOpen() {
-  return useSyncExternalStore(
+function setMode(mode: PanelMode) {
+  if (panel.mode === mode) return;
+  panel.mode = mode;
+  // A narrow-pane "open" is momentary; only the user's close is remembered.
+  localStorage.setItem(MODE_KEY, mode === "closed" ? "closed" : "auto");
+  publish();
+}
+
+function setHasRoom(hasRoom: boolean) {
+  if (panel.hasRoom === hasRoom) return;
+  panel.hasRoom = hasRoom;
+  // Once the panel can dock, an overlay request becomes the normal auto state.
+  if (hasRoom && panel.mode === "open") panel.mode = "auto";
+  publish();
+}
+
+function isVisible(): boolean {
+  return panel.mode === "open" || (panel.mode === "auto" && panel.hasRoom);
+}
+
+/** The header button: close a visible panel, or show a hidden one. */
+function togglePanel() {
+  if (isVisible()) setMode(panel.hasRoom ? "closed" : "auto");
+  else setMode(panel.hasRoom ? "auto" : "open");
+}
+
+function usePanelVisibility() {
+  useSyncExternalStore(
     (listener) => {
-      openListeners.add(listener);
-      return () => openListeners.delete(listener);
+      panelListeners.add(listener);
+      return () => panelListeners.delete(listener);
     },
-    () => panelOpen,
+    () => panelVersion,
   );
-}
-
-function readPosition(): Position {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(POSITION_KEY) ?? "null") as Partial<Position> | null;
-    if (typeof parsed?.right === "number" && typeof parsed.top === "number") return { right: parsed.right, top: parsed.top };
-  } catch {
-    // Fall through to the default.
-  }
-  return { right: 16, top: 56 };
-}
-
-function clampPosition(position: Position, width: number): Position {
-  return {
-    right: Math.min(Math.max(8, position.right), Math.max(8, window.innerWidth - width - 8)),
-    top: Math.min(Math.max(8, position.top), Math.max(8, window.innerHeight - 120)),
-  };
+  return { visible: isVisible(), hasRoom: panel.hasRoom };
 }
 
 // ---- Header button -----------------------------------------------------
 
 function HeaderButton({ threadId, isCompactViewport }: { threadId: string; isCompactViewport: boolean }) {
-  const open = usePanelOpen();
+  const { visible: open } = usePanelVisibility();
   const { snapshot } = useSnapshot(threadId, { poll: false });
   const changes = snapshot?.changes.ok ? snapshot.changes.value : null;
   const insertions = (changes?.uncommitted.insertions ?? 0) + (changes?.branch?.insertions ?? 0);
@@ -151,13 +170,14 @@ function HeaderButton({ threadId, isCompactViewport }: { threadId: string; isCom
       aria-label="Environment panel"
       aria-pressed={open}
       title="Environment panel"
-      onClick={() => setPanelOpen(!open)}
+      onClick={togglePanel}
+      data-env-panel-toggle=""
       className={cn(
         "inline-flex h-7 items-center gap-1.5 rounded-md px-1.5 text-muted-foreground hover:bg-accent hover:text-foreground",
         open && "bg-accent text-foreground",
       )}
     >
-      <Icon icon={GitBranchIcon} />
+      <Icon icon={DashboardSquare02Icon} />
       {showStat ? <DiffStat insertions={insertions} deletions={deletions} /> : null}
     </button>
   );
@@ -216,6 +236,7 @@ function Thumbnail({
 
 function usePanelActions(threadId: string, rpc: Rpc, refresh: (force?: boolean) => Promise<void>): PanelActions {
   const [busy, setBusy] = useState<string | null>(null);
+  const navigate = useBbNavigate();
   const act = async (name: string, run: () => Promise<{ message: string }>) => {
     setBusy(name);
     try {
@@ -240,6 +261,9 @@ function usePanelActions(threadId: string, rpc: Rpc, refresh: (force?: boolean) 
     ),
     Markdown: ({ content }) => <Markdown content={content} />,
     Thumbnail: (props) => <Thumbnail rpc={rpc} threadId={threadId} {...props} />,
+    openThread: (id) => navigate.toThread(id),
+    widgetAction: (widgetKey, actionIndex) =>
+      void act(`widget:${widgetKey}`, () => rpc.call("widgetAction", { threadId, widgetKey, actionIndex })),
     copy: (text, what) => {
       navigator.clipboard.writeText(text).then(
         () => toast.success(`${what} copied`),
@@ -255,7 +279,8 @@ function usePanelActions(threadId: string, rpc: Rpc, refresh: (force?: boolean) 
 
 // ---- Floating panel ----------------------------------------------------
 
-const PANEL_WIDTH = 340;
+/** Four 80px tiles with 8px gaps and 12px padding, like Control Center's grid. */
+const PANEL_WIDTH = 368;
 
 function relativeTime(at: number, now: number): string {
   const seconds = Math.max(0, Math.round((now - at) / 1000));
@@ -273,65 +298,211 @@ function useNow(intervalMs: number) {
   return now;
 }
 
-function PanelWindow({ threadId }: { threadId: string }) {
-  const { snapshot, error, loading, loadedAt, rpc, refresh } = useSnapshot(threadId, { poll: true });
-  const [position, setPosition] = useState(() => clampPosition(readPosition(), PANEL_WIDTH));
-  const drag = useRef<{ x: number; y: number; start: Position } | null>(null);
-  const now = useNow(10_000);
+// ---- Docking beside the chat ---------------------------------------------
+//
+// Like Codex, the panel sits in the thread pane's top-right corner and the
+// conversation moves over to make room: the plugin pads BB's chat scroller,
+// so its centered column re-centers in the space that is left. The panel
+// docks only when the chat keeps its full width beside it; otherwise it
+// overlays the chat on request.
 
+const DOCK_GAP = 12;
+/** BB's chat column is `max-w-[760px]`; used until the column is measurable. */
+const DEFAULT_CHAT_WIDTH = 760;
+const PADDED_ATTRIBUTE = "data-env-panel-padded";
+
+interface Dock {
+  top: number;
+  right: number;
+  bottom: number;
+  /** The chat keeps its full width beside the panel. */
+  room: boolean;
+}
+
+/** The pane showing `threadId`; in a split, the one whose timeline is that thread. */
+function findThreadWindow(threadId: string): HTMLElement | null {
+  const windows = [...document.querySelectorAll<HTMLElement>("[data-thread-window]")];
+  const selector = `[data-timeline-row-id^="${CSS.escape(threadId)}:"]`;
+  return windows.find((candidate) => candidate.querySelector(selector) !== null) ?? windows[0] ?? null;
+}
+
+/** The chat column's widest size, read from BB's own layout. */
+function chatWidth(pane: HTMLElement): number {
+  const column = pane.querySelector<HTMLElement>(".chat-prompt-box");
+  const max = column === null ? Number.NaN : Number.parseFloat(getComputedStyle(column).maxWidth);
+  return Number.isFinite(max) && max > 0 ? max : DEFAULT_CHAT_WIDTH;
+}
+
+function padScroller(scroller: HTMLElement, width: number) {
+  if (!scroller.hasAttribute(PADDED_ATTRIBUTE)) {
+    scroller.setAttribute(PADDED_ATTRIBUTE, JSON.stringify([scroller.style.paddingRight, scroller.style.transition]));
+    scroller.style.transition = "padding-right 350ms cubic-bezier(0.32, 0.72, 0, 1)";
+  }
+  scroller.style.paddingRight = `${width}px`;
+}
+
+function unpadScroller(scroller: HTMLElement) {
+  const saved = scroller.getAttribute(PADDED_ATTRIBUTE);
+  if (saved === null) return;
+  const [paddingRight, transition] = JSON.parse(saved) as [string, string];
+  scroller.style.paddingRight = paddingRight;
+  // Let the padding animate back before dropping the transition.
+  setTimeout(() => {
+    if (!scroller.hasAttribute(PADDED_ATTRIBUTE)) scroller.style.transition = transition;
+  }, 400);
+  scroller.removeAttribute(PADDED_ATTRIBUTE);
+}
+
+/**
+ * Measures the pane for `threadId` on every layout change. Reports whether
+ * the panel fits beside the full-width chat, and pads the chat while
+ * `reserve` is true and it fits.
+ */
+function usePaneLayout(threadId: string, reserve: boolean): Dock | null {
+  const [dock, setDock] = useState<Dock | null>(null);
   useEffect(() => {
-    const onResize = () => setPosition((current) => clampPosition(current, PANEL_WIDTH));
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
+    let padded: HTMLElement | null = null;
+    let observed: HTMLElement | null = null;
+    let frame = 0;
+    const release = () => {
+      if (padded !== null) unpadScroller(padded);
+      padded = null;
+    };
+    const resize = new ResizeObserver(() => schedule());
+    const update = () => {
+      frame = 0;
+      const pane = findThreadWindow(threadId);
+      if (pane !== observed) {
+        if (observed !== null) resize.unobserve(observed);
+        if (pane !== null) resize.observe(pane);
+        observed = pane;
+      }
+      if (pane === null) {
+        release();
+        setDock(null);
+        return;
+      }
+      const rect = pane.getBoundingClientRect();
+      const reserved = PANEL_WIDTH + DOCK_GAP * 2;
+      const room = rect.width - reserved >= chatWidth(pane);
+      const scroller = pane.querySelector<HTMLElement>(".thread-scrollbar");
+      if (padded !== null && padded !== scroller) release();
+      if (reserve && room && scroller !== null) {
+        padScroller(scroller, reserved);
+        padded = scroller;
+      } else {
+        release();
+      }
+      const next = {
+        top: Math.round(rect.top + DOCK_GAP),
+        right: Math.round(window.innerWidth - rect.right + DOCK_GAP),
+        bottom: Math.round(Math.max(DOCK_GAP, window.innerHeight - rect.bottom + DOCK_GAP)),
+        room,
+      };
+      setDock((current) =>
+        current !== null &&
+        current.top === next.top &&
+        current.right === next.right &&
+        current.bottom === next.bottom &&
+        current.room === next.room
+          ? current
+          : next,
+      );
+    };
+    const schedule = () => {
+      if (frame === 0) frame = requestAnimationFrame(update);
+    };
+    // BB re-renders panes when splits and side panels change.
+    const mutations = new MutationObserver((records) => {
+      if (records.some((record) => (record.target as Element).closest?.("[data-env-panel-window]") == null)) schedule();
+    });
+    mutations.observe(document.body, { childList: true, subtree: true });
+    window.addEventListener("resize", schedule);
+    update();
+    return () => {
+      mutations.disconnect();
+      resize.disconnect();
+      window.removeEventListener("resize", schedule);
+      if (frame !== 0) cancelAnimationFrame(frame);
+      release();
+    };
+  }, [threadId, reserve]);
+  return dock;
+}
 
-  const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest("button") !== null) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { x: event.clientX, y: event.clientY, start: position };
-  };
-  const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
-    const start = drag.current;
-    if (start === null) return;
-    setPosition(
-      clampPosition(
-        { right: start.start.right - (event.clientX - start.x), top: start.start.top + (event.clientY - start.y) },
-        PANEL_WIDTH,
-      ),
-    );
-  };
-  const onPointerUp = () => {
-    if (drag.current === null) return;
-    drag.current = null;
-    localStorage.setItem(POSITION_KEY, JSON.stringify(position));
-  };
-
+function PanelWindow({ threadId, dock }: { threadId: string; dock: Dock }) {
+  const { snapshot, error, loading, loadedAt, rpc, refresh } = useSnapshot(threadId, { poll: true });
+  const now = useNow(10_000);
   const actions = usePanelActions(threadId, rpc, refresh);
+  const overlay = !dock.room;
+  const [editing, setEditing] = useState(false);
+
+  // An overlay behaves like a popover: a click elsewhere dismisses it.
+  useEffect(() => {
+    if (!overlay) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Element | null;
+      if (target?.closest("[data-env-panel-window], [data-env-panel-toggle], [data-radix-popper-content-wrapper]")) return;
+      setMode("auto");
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [overlay]);
 
   let body: ReactNode;
-  if (snapshot !== null && snapshot.threadId === threadId) body = <PanelBody snapshot={snapshot} actions={actions} />;
-  else if (error !== null) body = <p className="px-3 py-4 text-sm text-destructive">{error}</p>;
+  if (snapshot !== null && snapshot.threadId === threadId) {
+    body = <BentoPanel tiles={[...builtInTiles(snapshot, actions), ...widgetTiles(snapshot, actions)]} editing={editing} />;
+  } else if (error !== null) body = <p className="px-3 py-4 text-sm text-destructive">{error}</p>;
   else body = <p className="px-3 py-4 text-sm text-muted-foreground">Loading…</p>;
 
   return (
     <PanelFrame
-      style={{ right: position.right, top: position.top, width: `min(${PANEL_WIDTH}px, calc(100vw - 16px))` }}
+      docked={!overlay}
+      headerActions={
+        <button
+          type="button"
+          onClick={() => setEditing(!editing)}
+          aria-pressed={editing}
+          className={cn(
+            "h-7 rounded-full px-2.5 text-xs font-medium transition-colors",
+            editing ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-foreground/8 hover:text-foreground",
+          )}
+        >
+          {editing ? "Done" : "Edit"}
+        </button>
+      }
+      style={{
+        top: dock.top,
+        right: dock.right,
+        width: `min(${PANEL_WIDTH}px, calc(100vw - ${DOCK_GAP * 2}px))`,
+        maxHeight: `calc(100vh - ${dock.top + dock.bottom}px)`,
+      }}
       loading={loading}
       updatedLabel={loadedAt > 0 ? `updated ${relativeTime(loadedAt, now)}` : "not loaded"}
       onRefresh={() => void refresh(true)}
-      onClose={() => setPanelOpen(false)}
-      dragHandlers={{ onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp }}
+      onClose={() => setMode(overlay ? "auto" : "closed")}
     >
       {body}
     </PanelFrame>
   );
 }
 
+/** Always measuring, so the panel appears as soon as the chat has room. */
+function PanelController({ threadId }: { threadId: string }) {
+  const { visible } = usePanelVisibility();
+  const dock = usePaneLayout(threadId, visible);
+  useEffect(() => {
+    if (dock !== null) setHasRoom(dock.room);
+  }, [dock]);
+  useEffect(() => () => setHasRoom(false), []);
+  if (!visible || dock === null) return null;
+  return <PanelWindow threadId={threadId} dock={dock} />;
+}
+
 function FloatingPanel() {
   const { threadId } = useBbContext();
-  const open = usePanelOpen();
-  if (!open || threadId === null) return null;
-  return <PanelWindow key={threadId} threadId={threadId} />;
+  if (threadId === null) return null;
+  return <PanelController key={threadId} threadId={threadId} />;
 }
 
 // ---- Thread info integration --------------------------------------------

@@ -1,6 +1,6 @@
 // The floating Environment panel body. Pure view: it renders a Snapshot and
 // reports user intent through callbacks; app.tsx owns data and navigation.
-import { useState, type CSSProperties, type DOMAttributes, type ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import ArrowDown01Icon from "@hugeicons/core-free-icons/ArrowDown01Icon";
 import ArrowRight01Icon from "@hugeicons/core-free-icons/ArrowRight01Icon";
@@ -8,6 +8,7 @@ import Cancel01Icon from "@hugeicons/core-free-icons/Cancel01Icon";
 import CancelCircleIcon from "@hugeicons/core-free-icons/CancelCircleIcon";
 import CheckmarkCircle02Icon from "@hugeicons/core-free-icons/CheckmarkCircle02Icon";
 import CircleIcon from "@hugeicons/core-free-icons/CircleIcon";
+import Clock01Icon from "@hugeicons/core-free-icons/Clock01Icon";
 import ComputerTerminal01Icon from "@hugeicons/core-free-icons/ComputerTerminal01Icon";
 import Copy01Icon from "@hugeicons/core-free-icons/Copy01Icon";
 import File01Icon from "@hugeicons/core-free-icons/File01Icon";
@@ -26,15 +27,19 @@ import Target02Icon from "@hugeicons/core-free-icons/Target02Icon";
 import Task01Icon from "@hugeicons/core-free-icons/Task01Icon";
 import { cn } from "@/lib/utils";
 import { AttachmentsSection } from "./attachments";
+import { CollapsibleSection, Divider, formatDuration, Identicon } from "./section";
+import { summarizeSubagents } from "../core/schedule.ts";
 import type {
   AgentInfo,
   ChangesInfo,
   ChecksState,
   EnvironmentInfo,
   PullRequestInfo,
+  ScheduledItem,
   Section,
   Snapshot,
   StackInfo,
+  Subagent,
 } from "../core/types.ts";
 
 export type AgentAction = "submit-stack" | "fix-checks" | "address-review" | "restack";
@@ -54,6 +59,9 @@ export interface PanelActions {
     fallback?: ReactNode;
   }) => ReactNode;
   copy: (text: string, what: string) => void;
+  openThread: (threadId: string) => void;
+  /** Runs a sub-plugin widget's prompt action by index. */
+  widgetAction: (widgetKey: string, actionIndex: number) => void;
   commit: () => void;
   markReady: () => void;
   askAgent: (action: AgentAction) => void;
@@ -80,17 +88,6 @@ export function DiffStat({ insertions, deletions, className }: { insertions: num
   );
 }
 
-function SectionTitle({ title, count, trailing }: { title: string; count?: number; trailing?: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between px-1 pb-1 pt-3 text-xs font-medium text-muted-foreground">
-      <span>
-        {title}
-        {count === undefined ? null : <span className="ml-1.5 tabular-nums opacity-70">{count}</span>}
-      </span>
-      {trailing}
-    </div>
-  );
-}
 
 function Row({
   icon,
@@ -142,7 +139,7 @@ function Row({
   );
 }
 
-function SmallButton({
+export function SmallButton({
   children,
   onClick,
   busy,
@@ -212,9 +209,7 @@ function ShowMore({ hidden, expanded, onToggle }: { hidden: number; expanded: bo
   );
 }
 
-function Divider() {
-  return <div className="mx-1 my-2 border-t border-border" />;
-}
+
 
 // ---- Environment -------------------------------------------------------
 
@@ -290,7 +285,7 @@ function ChangesRows({ changes, actions }: { changes: ChangesInfo; actions: Pane
   );
 }
 
-function EnvironmentSection({
+export function EnvironmentSection({
   environment,
   changes,
   actions,
@@ -337,7 +332,7 @@ function EnvironmentSection({
 
 // ---- Pull request ------------------------------------------------------
 
-function prIcon(state: string): { icon: IconSvgElement; className: string } {
+export function prIcon(state: string): { icon: IconSvgElement; className: string } {
   switch (state) {
     case "draft":
       return { icon: GitPullRequestDraftIcon, className: "text-muted-foreground" };
@@ -364,14 +359,14 @@ const ATTENTION_LABEL: Record<string, string> = {
   review_requested: "Review requested",
 };
 
-function ChecksBadge({ state }: { state: ChecksState | string }) {
+export function ChecksBadge({ state }: { state: ChecksState | string }) {
   if (state === "passing") return <Icon icon={CheckmarkCircle02Icon} className="size-3.5 text-success" />;
   if (state === "failing") return <Icon icon={CancelCircleIcon} className="size-3.5 text-destructive" />;
   if (state === "pending") return <Icon icon={CircleIcon} className="size-3.5 text-warning" />;
   return null;
 }
 
-function PullRequestSection({ pullRequest, actions }: { pullRequest: Section<PullRequestInfo | null>; actions: PanelActions }) {
+export function PullRequestSection({ pullRequest, actions }: { pullRequest: Section<PullRequestInfo | null>; actions: PanelActions }) {
   if (!pullRequest.ok) return <SectionError error={pullRequest.error} />;
   const pr = pullRequest.value;
   if (pr === null) return <Row icon={GithubIcon} label="No pull request for this branch" muted />;
@@ -422,14 +417,12 @@ function PullRequestSection({ pullRequest, actions }: { pullRequest: Section<Pul
 
 // ---- Stack -------------------------------------------------------------
 
-function StackSection({ stack, actions }: { stack: Section<StackInfo | null>; actions: PanelActions }) {
+export function StackSection({ stack, actions }: { stack: Section<StackInfo | null>; actions: PanelActions }) {
   if (!stack.ok) {
     return (
-      <>
-        <Divider />
-        <SectionTitle title="Stack" />
+      <CollapsibleSection id="stack" title="Stack">
         <SectionError error={stack.error} />
-      </>
+      </CollapsibleSection>
     );
   }
   const value = stack.value;
@@ -437,17 +430,15 @@ function StackSection({ stack, actions }: { stack: Section<StackInfo | null>; ac
   const currentIndex = value.prs.findIndex((pr) => pr.isCurrent);
   // prs are top first; position counts up from trunk like github.com does.
   const position = currentIndex === -1 ? null : value.prs.length - currentIndex;
+  const where = `${position === null ? `${value.prs.length} PRs` : `${position} of ${value.prs.length}`} · on ${value.trunk}`;
+  const failing = value.prs.filter((pr) => pr.checks === "failing" && pr.state !== "merged" && pr.state !== "closed").length;
   return (
-    <>
-      <Divider />
-      <SectionTitle
-        title={`Stack #${value.number}`}
-        trailing={
-          <span className="font-normal">
-            {position === null ? `${value.prs.length} PRs` : `${position} of ${value.prs.length}`} · on {value.trunk}
-          </span>
-        }
-      />
+    <CollapsibleSection
+      id="stack"
+      title={`Stack #${value.number}`}
+      trailing={<span className="font-normal">{where}</span>}
+      summary={failing > 0 ? `${where} · ${failing} failing` : where}
+    >
       {value.prs.map((pr) => {
         const { icon, className } = prIcon(pr.state);
         const done = pr.state === "merged" || pr.state === "closed";
@@ -478,7 +469,7 @@ function StackSection({ stack, actions }: { stack: Section<StackInfo | null>; ac
           Sync stack
         </SmallButton>
       </div>
-    </>
+    </CollapsibleSection>
   );
 }
 
@@ -492,16 +483,17 @@ function Meter({ value, className }: { value: number; className?: string }) {
   );
 }
 
-function AgentSection({ agent }: { agent: Section<AgentInfo> }) {
+export function AgentSection({ agent }: { agent: Section<AgentInfo> }) {
   const [showTodos, setShowTodos] = useState(false);
   if (!agent.ok) return null;
   const { goal, todos, context, backgroundTasks } = agent.value;
   if (goal === null && todos === null && context === null && backgroundTasks.length === 0) return null;
   const contextShare = context === null ? 0 : context.usedTokens / context.windowTokens;
+  const summary = [todos ? `${todos.done}/${todos.total} tasks` : null, context ? `${Math.round(contextShare * 100)}% context` : null]
+    .filter(Boolean)
+    .join(" · ");
   return (
-    <>
-      <Divider />
-      <SectionTitle title="Agent" />
+    <CollapsibleSection id="agent" title="Agent" summary={summary}>
       {goal === null ? null : <Row icon={Target02Icon} label={goal.objective} title={`${goal.status}: ${goal.objective}`} trailing={<span className="shrink-0 text-xs text-muted-foreground">{goal.status}</span>} />}
       {todos === null ? null : (
         <>
@@ -546,11 +538,132 @@ function AgentSection({ agent }: { agent: Section<AgentInfo> }) {
       {backgroundTasks.map((task, index) => (
         <Row key={index} icon={Loading03Icon} iconClassName="animate-spin" label={task} muted />
       ))}
-    </>
+    </CollapsibleSection>
   );
 }
 
-// ---- Sources and files ----------------------------------------------------
+// ---- Subagents -----------------------------------------------------------
+
+function subagentTone(status: Subagent["status"]): string {
+  if (status === "failed") return "text-destructive";
+  if (status === "running" || status === "pending") return "text-warning";
+  if (status === "done") return "text-success";
+  return "text-muted-foreground";
+}
+
+function SubagentRow({ subagent, actions, now }: { subagent: Subagent; actions: PanelActions; now: number }) {
+  const [open, setOpen] = useState(false);
+  const active = subagent.status === "running" || subagent.status === "pending";
+  const ran = subagent.startedAt === null ? null : formatDuration((subagent.endedAt ?? now) - subagent.startedAt);
+  const body = (
+    <>
+      <Identicon seed={subagent.id} title={subagent.kind === "thread" ? "Child thread" : "Delegated subagent"} />
+      <span className="min-w-0 flex-1 truncate">{subagent.label}</span>
+      {ran ? <span className="shrink-0 font-mono text-xs text-muted-foreground">{ran}</span> : null}
+      <Icon
+        icon={active ? Loading03Icon : subagent.status === "failed" ? CancelCircleIcon : CheckmarkCircle02Icon}
+        className={cn("size-3.5", subagentTone(subagent.status), active && "animate-spin")}
+      />
+    </>
+  );
+  const rowClass = "flex min-h-8 w-full items-center gap-2.5 rounded-md px-1.5 py-1 text-left text-sm hover:bg-accent";
+  return (
+    <div>
+      {subagent.threadId !== null ? (
+        <button type="button" className={rowClass} onClick={() => actions.openThread(subagent.threadId!)} title="Open thread">
+          {body}
+        </button>
+      ) : (
+        <button type="button" className={rowClass} onClick={() => setOpen(!open)} aria-expanded={subagent.summary ? open : undefined}>
+          {body}
+        </button>
+      )}
+      {open && subagent.summary ? <p className="mb-1 ml-9 whitespace-pre-line text-xs text-muted-foreground">{subagent.summary}</p> : null}
+    </div>
+  );
+}
+
+export function SubagentsSection({ subagents, actions }: { subagents: Section<Subagent[]>; actions: PanelActions }) {
+  const [now] = useState(Date.now);
+  if (!subagents.ok || subagents.value.length === 0) return null;
+  const all = subagents.value;
+  const active = all.filter((subagent) => subagent.status === "running" || subagent.status === "pending");
+  const finished = all.filter((subagent) => !active.includes(subagent));
+  const avatars = (
+    <span className="flex -space-x-1.5">
+      {all.slice(0, 5).map((subagent) => (
+        <Identicon key={subagent.id} seed={subagent.id} className="size-4 [&_svg]:size-3" />
+      ))}
+    </span>
+  );
+  const summary = (
+    <span className="inline-flex items-center gap-1.5">
+      {avatars}
+      {summarizeSubagents(all)}
+    </span>
+  );
+  return (
+    <CollapsibleSection id="subagents" title="Subagents" count={all.length} summary={summary}>
+      {[
+        ["Active", active],
+        ["Done", finished],
+      ].map(([label, group]) =>
+        (group as Subagent[]).length === 0 ? null : (
+          <div key={label as string}>
+            <div className="px-1.5 pb-0.5 pt-1 text-[11px] text-muted-foreground">
+              {label as string} · {(group as Subagent[]).length}
+            </div>
+            {(group as Subagent[]).map((subagent) => (
+              <SubagentRow key={subagent.id} subagent={subagent} actions={actions} now={now} />
+            ))}
+          </div>
+        ),
+      )}
+    </CollapsibleSection>
+  );
+}
+
+// ---- Scheduled -----------------------------------------------------------
+
+function relativeFuture(at: number, now = Date.now()): string {
+  const minutes = Math.round((at - now) / 60_000);
+  if (minutes <= 0) return "now";
+  if (minutes < 60) return `in ${minutes}m`;
+  if (minutes < 48 * 60) return `in ${Math.round(minutes / 60)}h`;
+  return `in ${Math.round(minutes / 1440)}d`;
+}
+
+export function ScheduledSection({ scheduled, actions }: { scheduled: Section<ScheduledItem[]>; actions: PanelActions }) {
+  if (!scheduled.ok || scheduled.value.length === 0) return null;
+  const items = scheduled.value;
+  return (
+    <CollapsibleSection
+      id="scheduled"
+      title="Scheduled"
+      count={items.length}
+      summary={items.length === 1 ? `${items[0]!.name} · ${items[0]!.schedule}` : undefined}
+    >
+      {items.map((item) => (
+        <button
+          key={item.id}
+          type="button"
+          onClick={() => (item.lastRunThreadId ? actions.openThread(item.lastRunThreadId) : undefined)}
+          disabled={!item.lastRunThreadId}
+          title={item.lastRunThreadId ? "Open the latest run" : undefined}
+          className="flex min-h-8 w-full items-center gap-2.5 rounded-md px-1.5 py-1 text-left text-sm enabled:hover:bg-accent"
+        >
+          <Icon icon={Clock01Icon} className={item.enabled ? "text-muted-foreground" : "text-muted-foreground/50"} />
+          <span className={cn("min-w-0 flex-1 truncate", !item.enabled && "text-muted-foreground")}>
+            {item.name} <span className="text-muted-foreground">{item.schedule}</span>
+          </span>
+          <span className={cn("shrink-0 text-xs", item.lastRunStatus === "failed" ? "text-destructive" : "text-muted-foreground")}>
+            {!item.enabled ? "Paused" : item.nextRunAt ? relativeFuture(item.nextRunAt) : item.lastRunStatus ?? ""}
+          </span>
+        </button>
+      ))}
+    </CollapsibleSection>
+  );
+}
 
 // ---- Panel -------------------------------------------------------------
 
@@ -562,8 +675,9 @@ export function PanelBody({ snapshot, actions }: { snapshot: Snapshot; actions: 
         <PullRequestSection pullRequest={snapshot.pullRequest} actions={actions} />
       ) : null}
       <StackSection stack={snapshot.stack} actions={actions} />
+      <ScheduledSection scheduled={snapshot.scheduled} actions={actions} />
       <AgentSection agent={snapshot.agent} />
-      <Divider />
+      <SubagentsSection subagents={snapshot.subagents} actions={actions} />
       <AttachmentsSection attachments={snapshot.attachments} actions={actions} />
     </div>
   );
@@ -571,51 +685,58 @@ export function PanelBody({ snapshot, actions }: { snapshot: Snapshot; actions: 
 
 /**
  * The part of the panel BB's Thread info tab lacks: it already shows the
- * environment, branch, PR, goal, and plan, so this adds the stack and
- * attachments below them.
+ * environment, branch, PR, goal, and plan, so this adds the stack,
+ * schedules, subagents, and attachments.
  */
 export function ThreadInfoExtras({ snapshot, actions }: { snapshot: Snapshot; actions: PanelActions }) {
   return (
     <div className="-mx-2 pb-2">
       <StackSection stack={snapshot.stack} actions={actions} />
-      <Divider />
+      <ScheduledSection scheduled={snapshot.scheduled} actions={actions} />
+      <SubagentsSection subagents={snapshot.subagents} actions={actions} />
       <AttachmentsSection attachments={snapshot.attachments} actions={actions} />
     </div>
   );
 }
 
-/** The floating window chrome: a draggable title bar and a scrolling body. */
+/**
+ * The panel chrome: a title bar and a scrolling body. Docked beside the chat
+ * it reads as part of the page; overlaid on a narrow pane it lifts off it.
+ */
 export function PanelFrame({
   style,
+  docked,
   loading,
   updatedLabel,
   onRefresh,
   onClose,
-  dragHandlers,
+  headerActions,
   children,
 }: {
   style: CSSProperties;
+  docked: boolean;
+  headerActions?: ReactNode;
   loading: boolean;
   updatedLabel: string;
   onRefresh: () => void;
   onClose: () => void;
-  dragHandlers?: DOMAttributes<HTMLDivElement>;
   children: ReactNode;
 }) {
   return (
     <section
       aria-label="Environment panel"
-      className="fixed z-30 flex max-h-[calc(100vh-72px)] flex-col overflow-hidden rounded-2xl border border-border bg-popover text-popover-foreground shadow-2xl"
+      data-env-panel-window=""
+      data-overlay={docked ? undefined : ""}
+      // Surface, edge, shadow, and motion live in app.css.
+      className="fixed z-30 flex flex-col overflow-hidden text-popover-foreground"
       style={style}
       onKeyDown={(event) => {
         if (event.key === "Escape") onClose();
       }}
     >
-      <div
-        className="flex cursor-grab touch-none select-none items-center gap-1 px-3 pb-1 pt-2.5 active:cursor-grabbing"
-        {...dragHandlers}
-      >
+      <div className="flex items-center gap-1 px-3 pb-1 pt-2.5">
         <h2 className="flex-1 text-sm font-medium text-muted-foreground">Environment</h2>
+        {headerActions}
         <IconButton icon={loading ? Loading03Icon : RefreshIcon} label={`Refresh (${updatedLabel})`} onClick={onRefresh} spin={loading} />
         <IconButton icon={Cancel01Icon} label="Close environment panel" onClick={onClose} />
       </div>

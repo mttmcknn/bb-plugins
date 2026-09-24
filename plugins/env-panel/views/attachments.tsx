@@ -23,6 +23,7 @@ import TaskDone01Icon from "@hugeicons/core-free-icons/TaskDone01Icon";
 import { cn } from "@/lib/utils";
 import type { Attachment, AttachmentKind, AttachmentsInfo, GithubItem, LinearIssue, NotionPage, Section, WebPreview } from "../core/types.ts";
 import type { PanelActions } from "./panel";
+import { CollapsibleSection } from "./section";
 
 // ---- Small pieces -------------------------------------------------------
 
@@ -396,6 +397,8 @@ const FILTERS: { id: Filter; label: string; kinds: AttachmentKind[] }[] = [
   { id: "files", label: "Files", kinds: ["file"] },
 ];
 
+const SINGULAR: Record<string, string> = { Tickets: "ticket", Docs: "doc", Code: "code link", Links: "link", Media: "image", Files: "file" };
+
 // Richest first: tickets and docs lead, plain files trail.
 const KIND_ORDER: AttachmentKind[] = ["linear", "notion", "figma", "github", "web", "slack", "file"];
 const COLLAPSED_CARDS = 6;
@@ -413,10 +416,9 @@ export function AttachmentsSection({
   const [expanded, setExpanded] = useState(false);
   if (!attachments.ok) {
     return (
-      <>
-        <SectionHeading title={title} />
+      <CollapsibleSection id="attachments" title={title}>
         <p className="px-1.5 py-1 text-xs text-destructive">{attachments.error}</p>
-      </>
+      </CollapsibleSection>
     );
   }
   const { items, enriching } = attachments.value;
@@ -431,13 +433,19 @@ export function AttachmentsSection({
     .sort((a, b) => KIND_ORDER.indexOf(a.ref.kind) - KIND_ORDER.indexOf(b.ref.kind));
   const shownCards = expanded ? cards : cards.slice(0, COLLAPSED_CARDS);
 
+  const summary = FILTERS.filter((entry) => entry.id !== "all")
+    .map((entry) => [entry.label, items.filter((item) => entry.kinds.includes(item.ref.kind)).length] as const)
+    .filter(([, count]) => count > 0)
+    .map(([label, count]) => `${count} ${count === 1 ? SINGULAR[label] ?? label.toLowerCase() : label.toLowerCase()}`)
+    .join(" · ");
   return (
-    <>
-      <SectionHeading
-        title={title}
-        count={items.length}
-        trailing={enriching ? <Glyph icon={Loading03Icon} className="size-3 animate-spin" /> : null}
-      />
+    <CollapsibleSection
+      id="attachments"
+      title={title}
+      count={items.length}
+      summary={summary}
+      trailing={enriching ? <Glyph icon={Loading03Icon} className="size-3 animate-spin" /> : null}
+    >
       {items.length >= 5 && available.length > 2 ? (
         <div className="flex flex-wrap gap-1 px-1 pb-1.5" role="tablist" aria-label="Filter attachments">
           {available.map((entry) => (
@@ -473,18 +481,6 @@ export function AttachmentsSection({
         </button>
       ) : null}
       {images.length > 0 ? <ImageGrid images={images} actions={actions} /> : null}
-    </>
-  );
-}
-
-function SectionHeading({ title, count, trailing }: { title: string; count?: number; trailing?: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between px-1 pb-1 pt-3 text-xs font-medium text-muted-foreground">
-      <span>
-        {title}
-        {count === undefined ? null : <span className="ml-1.5 tabular-nums opacity-70">{count}</span>}
-      </span>
-      {trailing}
-    </div>
+    </CollapsibleSection>
   );
 }

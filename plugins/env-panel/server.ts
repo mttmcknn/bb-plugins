@@ -11,7 +11,8 @@ import {
   type BbPluginApi,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import { cached, fetchStack } from "./core/cli.ts";
+import { cached, fetchStack, run } from "./core/cli.ts";
+import { describeCron } from "./core/schedule.ts";
 import { extractLinks, isImagePath, linearKeysFromBranch, storageAttachments } from "./core/attachments.ts";
 import {
   fetchGithubItem,
@@ -23,6 +24,14 @@ import {
 } from "./core/enrich.ts";
 import { createEnrichment } from "./core/enrichment.ts";
 import { parsePullUrl } from "./core/stack.ts";
+import {
+  createWidgetFromTemplate,
+  createWidgetRunner,
+  WIDGET_DIR,
+  WIDGET_RPC_METHOD,
+  widgetRpcOutputSchema,
+} from "./core/widget-runner.ts";
+import { WIDGET_ICONS, WIDGET_TEMPLATES, type Widget } from "./core/widgets.ts";
 import type {
   AgentInfo,
   Attachment,
@@ -31,8 +40,10 @@ import type {
   ChangesInfo,
   EnvironmentInfo,
   PullRequestInfo,
+  ScheduledItem,
   Section,
   Snapshot,
+  Subagent,
   StackInfo,
 } from "./core/types.ts";
 
@@ -63,6 +74,12 @@ export const rpcContract = defineRpcContract({
       })
       .strict(),
     output: z.object({ dataUrl: z.string().nullable() }),
+  },
+  widgetAction: {
+    input: z
+      .object({ threadId: threadIdSchema, widgetKey: z.string().max(200), actionIndex: z.number().int().min(0).max(3) })
+      .strict(),
+    output: messageSchema,
   },
   askAgent: {
     input: z
@@ -147,6 +164,26 @@ export default async function plugin(bb: BbPluginApi) {
   /** Images each thread's last snapshot showed: the only ones `thumbnail` serves. */
   const thumbnailSources = new Map<string, { urls: Set<string>; paths: Set<string> }>();
   const thumbnails = cached<string | null>(30 * 60_000);
+  const automationsCache = cached<unknown[]>(60_000);
+
+  const widgetRunner = createWidgetRunner({
+    selfPluginId: "env-panel",
+    discover: async () => {
+      const methods = await bb.sdk.plugins.experimental_discoverRpc({ method: WIDGET_RPC_METHOD });
+      return [...new Set(methods.map((method) => method.pluginId))].map((pluginId) => ({ pluginId }));
+    },
+    callPlugin: (pluginId, input) =>
+      bb.sdk.plugins.callRpc({
+        pluginId,
+        method: WIDGET_RPC_METHOD,
+        input,
+        outputSchema: widgetRpcOutputSchema,
+        signal: AbortSignal.timeout(8_000),
+      }),
+    log: (message) => bb.log.warn(message),
+  });
+  /** Each thread's last widgets, so a click runs the action the user saw. */
+  const shownWidgets = new Map<string, Widget[]>();
 
   // ---- Sections ---------------------------------------------------------
 
@@ -249,6 +286,114 @@ export default async function plugin(bb: BbPluginApi) {
         .filter((command) => command.completedAt === null)
         .map((command) => command.description),
     };
+  }
+
+  function childStatus(status: string): Subagent["status"] {
+    if (status === "idle") return "done";
+    if (status === "error") return "failed";
+    if (status === "stopping") return "stopped";
+    return status === "pending" ? "pending" : "running";
+  }
+
+  function delegationStatus(status: string): Subagent["status"] {
+    if (status === "completed") return "done";
+    if (status === "failed") return "failed";
+    if (status === "interrupted") return "stopped";
+    return "running";
+  }
+
+  /** BB child threads, plus subagents the provider delegated to inside this thread. */
+  async function loadSubagents(threadId: string): Promise<Subagent[]> {
+    const [children, rows] = await Promise.all([
+      bb.sdk.threads.list({ parentThreadId: threadId, includeHidden: true, limit: 50 }),
+      bb.sdk.threads.events.list({ threadId, types: ["item/started", "item/completed"], order: "desc", limit: "100" }),
+    ]);
+    const subagents: Subagent[] = children
+      .filter((child) => child.deletedAt === null)
+      .map((child) => ({
+        id: child.id,
+        label: child.title ?? child.titleFallback ?? "Untitled thread",
+        kind: "thread",
+        status: childStatus(child.status),
+        threadId: child.id,
+        providerId: child.providerId,
+        summary: null,
+        background: child.visibility === "hidden",
+        startedAt: child.createdAt,
+        endedAt: childStatus(child.status) === "running" || childStatus(child.status) === "pending" ? null : child.updatedAt,
+      }));
+    const childIds = new Set(subagents.map((subagent) => subagent.id));
+    // Rows arrive newest first, so the first row for an item is its latest
+    // state and the last one is when it started.
+    const startedAt = new Map<string, number>();
+    for (const row of rows) {
+      const item = (row.data as { item?: { type?: string; id?: string } }).item;
+      if (item?.type === "delegation" && typeof item.id === "string") startedAt.set(item.id, row.createdAt);
+    }
+    const seen = new Set<string>();
+    for (const row of rows) {
+      const item = (row.data as { item?: Record<string, unknown> }).item;
+      if (item?.type !== "delegation" || typeof item.id !== "string" || seen.has(item.id)) continue;
+      seen.add(item.id);
+      if (typeof item.childRef === "string" && childIds.has(item.childRef)) continue;
+      subagents.push({
+        id: item.id,
+        label: typeof item.label === "string" && item.label !== "" ? item.label : "Subagent",
+        kind: "delegation",
+        status: delegationStatus(String(item.status ?? "pending")),
+        threadId: null,
+        providerId: null,
+        summary: typeof item.summary === "string" ? item.summary.slice(0, 300) : null,
+        background: item.background === true,
+        // Without a separate start row (it scrolled out of the recent events)
+        // the run time is unknown, not zero.
+        startedAt: startedAt.get(item.id) === row.createdAt ? null : (startedAt.get(item.id) ?? null),
+        endedAt: row.type === "item/completed" ? row.createdAt : null,
+      });
+    }
+    return subagents;
+  }
+
+  /** Automations that re-prompt this thread or that this thread created. */
+  async function loadScheduled(projectId: string, threadId: string): Promise<ScheduledItem[]> {
+    const automations = await automationsCache(projectId, async () => {
+      const stdout = await run("bb", ["automation", "list", "--project", projectId, "--json"], { timeoutMs: 20_000 });
+      const parsed: unknown = JSON.parse(stdout);
+      return Array.isArray(parsed) ? parsed : [];
+    });
+    const items: ScheduledItem[] = [];
+    for (const raw of automations) {
+      const automation = raw as {
+        id?: string;
+        name?: string;
+        enabled?: boolean;
+        trigger?: { cron?: string; at?: string | number; triggerType?: string };
+        execution?: { targetThreadId?: string | null };
+        createdByThreadId?: string | null;
+        nextRunAt?: number | null;
+        lastRunAt?: number | null;
+        lastRunStatus?: string | null;
+        lastRunThreadId?: string | null;
+        runCount?: number;
+      };
+      const targets = automation.execution?.targetThreadId === threadId;
+      if (!targets && automation.createdByThreadId !== threadId) continue;
+      if (typeof automation.id !== "string") continue;
+      const trigger = automation.trigger ?? {};
+      items.push({
+        id: automation.id,
+        name: automation.name ?? "Automation",
+        enabled: automation.enabled !== false,
+        schedule: trigger.cron ? describeCron(trigger.cron) : trigger.at ? "Once" : (trigger.triggerType ?? "Scheduled"),
+        nextRunAt: automation.nextRunAt ?? null,
+        lastRunAt: automation.lastRunAt ?? null,
+        lastRunStatus: automation.lastRunStatus ?? null,
+        lastRunThreadId: automation.lastRunThreadId ?? null,
+        runCount: automation.runCount ?? 0,
+        relation: targets ? "targets" : "created",
+      });
+    }
+    return items;
   }
 
   async function loadMessageTexts(threadId: string): Promise<string[]> {
@@ -354,14 +499,32 @@ export default async function plugin(bb: BbPluginApi) {
     const environment = await section(() => loadEnvironment(thread.environmentId));
     const env = environment.ok ? environment.value : null;
 
-    const [changes, pullRequest, agent] = await Promise.all([
+    const [changes, pullRequest, agent, subagents, scheduled] = await Promise.all([
       section(() => loadChanges(env)),
       section(() => loadPullRequest(env)),
       section(() => loadAgent(threadId, thread.status)),
+      section(() => loadSubagents(threadId)),
+      section(() => loadScheduled(thread.projectId, threadId)),
     ]);
     const stack = await section(() => loadStack(pullRequest.ok ? pullRequest.value : null, force));
     if (force) enrichment.invalidate();
-    const attachments = await section(() => loadAttachments(threadId, env));
+    const [attachments, widgets] = await Promise.all([
+      section(() => loadAttachments(threadId, env)),
+      section(async () => {
+        const loaded = await widgetRunner.load(
+          {
+            threadId,
+            projectId: thread.projectId,
+            branch: env?.branch ?? null,
+            worktree: env?.isGitRepo ? env.path : null,
+            pullRequestUrl: pullRequest.ok ? (pullRequest.value?.url ?? null) : null,
+          },
+          force,
+        );
+        shownWidgets.set(threadId, loaded);
+        return loaded.filter((widget) => widget.hidden !== true);
+      }),
+    ]);
 
     return {
       threadId,
@@ -371,7 +534,10 @@ export default async function plugin(bb: BbPluginApi) {
       pullRequest,
       stack,
       agent,
+      subagents,
+      scheduled,
       attachments,
+      widgets,
     };
   }
 
@@ -406,6 +572,17 @@ export default async function plugin(bb: BbPluginApi) {
         return null;
       }),
     }),
+    widgetAction: async ({ threadId, widgetKey, actionIndex }) => {
+      const widget = shownWidgets.get(threadId)?.find((candidate) => candidate.key === widgetKey);
+      const action = widget?.actions?.[actionIndex];
+      if (action?.kind !== "prompt") throw new Error("That widget action is no longer available. Refresh the panel.");
+      await bb.sdk.threads.send({
+        threadId,
+        mode: "queue-if-active",
+        input: [{ type: "text", text: action.prompt, mentions: [] }],
+      });
+      return { message: `Sent "${action.label}" to the agent.` };
+    },
     askAgent: async ({ threadId, action }) => {
       await bb.sdk.threads.send({
         threadId,
@@ -423,7 +600,7 @@ export default async function plugin(bb: BbPluginApi) {
     "  bb env-panel [<thread-id>] [--refresh] [--json]",
     "",
     "Prints the Environment panel for a thread: changes, PR, stack, agent",
-    "progress, and attachments. Defaults to $BB_THREAD_ID.",
+    "progress, widgets, and attachments. Defaults to $BB_THREAD_ID.",
   ].join("\n");
 
   function formatSnapshot(snapshot: Snapshot): string {
@@ -462,11 +639,81 @@ export default async function plugin(bb: BbPluginApi) {
       if (agent.context) out.push(`context: ${Math.round((agent.context.usedTokens / agent.context.windowTokens) * 100)}%`);
       return out;
     });
+    add("Subagents", snapshot.subagents, (subagents) =>
+      subagents.map((subagent) => `${subagent.status.padEnd(8)} ${subagent.label}${subagent.threadId ? ` (${subagent.threadId})` : ""}`),
+    );
+    add("Scheduled", snapshot.scheduled, (items) =>
+      items.map((item) => `${item.enabled ? "" : "[paused] "}${item.name} · ${item.schedule}${item.lastRunStatus ? ` · last ${item.lastRunStatus}` : ""}`),
+    );
+    add("Widgets", snapshot.widgets, (widgets) =>
+      widgets.map((widget) => `${widget.key}  ${widget.title}${widget.value ? `: ${widget.value}` : ""}${widget.error ? `  (error: ${widget.error})` : ""}`),
+    );
     add("Attachments", snapshot.attachments, ({ items, enriching }) => [
       ...items.map((item) => `${item.ref.kind.padEnd(7)} ${describeAttachment(item)}`),
       ...(enriching ? ["(still fetching details; run again for more)"] : []),
     ]);
     return lines.join("\n");
+  }
+
+  const widgetsHelp = [
+    "Panel widgets are small programs that add tiles to the Environment panel.",
+    "",
+    "Script widgets",
+    `  Put an executable file in ${WIDGET_DIR}. It runs in the thread's worktree`,
+    "  (or your home folder) and prints one JSON object, or { \"widgets\": [...] } for up to 6.",
+    "  Settings go in comments near the top:",
+    "    # bb-widget: title=Devices      tile title when the script fails",
+    "    # bb-widget: size=wide          small (1x1), wide (2x1), or large (2x2)",
+    "    # bb-widget: refresh=30         seconds between runs (5-3600, default 60)",
+    "    # bb-widget: scope=global       share one result across threads (default: thread)",
+    "  Environment: BB_THREAD_ID, BB_PROJECT_ID, BB_BRANCH, BB_WORKTREE, BB_PR_URL, BB_PR_NUMBER.",
+    "",
+    "Widget JSON (only title is required)",
+    '  { "title": "CI", "icon": "rocket", "value": "Green", "caption": "12/12 checks",',
+    '    "tone": "positive|warning|critical|accent|neutral", "progress": 0.75,',
+    '    "url": "https://…", "items": [{ "label": "…", "detail": "…", "url": "…", "tone": "…" }],',
+    '    "actions": [{ "kind": "url", "label": "Open", "url": "…" },',
+    '                { "kind": "prompt", "label": "Fix it", "prompt": "Ask the agent…" },',
+    '                { "kind": "copy", "label": "Copy", "text": "…" }],',
+    '    "hidden": false }',
+    `  icon: an emoji, or one of ${WIDGET_ICONS.join(", ")}.`,
+    "  Prompt actions go to the thread's agent only when the user clicks them.",
+    "",
+    "Plugin widgets",
+    `  A bb plugin can publish a discoverable RPC method named "${WIDGET_RPC_METHOD}".`,
+    "  It receives { threadId, projectId, branch, worktree, pullRequestUrl } and returns",
+    "  { widgets: [widget JSON, …] }. Register it with { experimental_discoverable: true }.",
+    "",
+    "Commands",
+    "  bb env-panel widgets list                         show installed widgets",
+    `  bb env-panel widgets new <name> [--template id]   templates: ${Object.keys(WIDGET_TEMPLATES).join(", ")}`,
+  ].join("\n");
+
+  async function runWidgetsCommand(args: string[]) {
+    const [command, ...rest] = args;
+    if (command === undefined || command === "list") {
+      const scripts = await widgetRunner.listScripts();
+      const lines = scripts.map(
+        (script) => `${script.name.padEnd(24)} ${script.meta.size ?? "small"}  every ${script.meta.refreshSeconds}s  ${script.meta.scope}`,
+      );
+      return {
+        exitCode: 0,
+        stdout: [`Script widgets in ${WIDGET_DIR}:`, ...(lines.length > 0 ? lines : ["  (none yet: run `bb env-panel widgets new <name>`)"])].join("\n"),
+      };
+    }
+    if (command === "new") {
+      const name = rest.find((arg) => !arg.startsWith("--"));
+      const templateFlag = rest.indexOf("--template");
+      const template = templateFlag === -1 ? "basic" : rest[templateFlag + 1];
+      if (name === undefined || template === undefined) return { exitCode: 1, stderr: "Usage: bb env-panel widgets new <name> [--template <id>]" };
+      try {
+        const path = await createWidgetFromTemplate(name, template);
+        return { exitCode: 0, stdout: `Created ${path}\nIt appears in the panel on the next refresh. Edit it to change what it shows.` };
+      } catch (error) {
+        return { exitCode: 1, stderr: errorMessage(error) };
+      }
+    }
+    return { exitCode: command === "help" ? 0 : 1, stdout: widgetsHelp };
   }
 
   function describeAttachment({ ref, detail, hint }: Attachment): string {
@@ -489,15 +736,21 @@ export default async function plugin(bb: BbPluginApi) {
 
   bb.cli.register({
     name: "env-panel",
-    summary: "Show a thread's environment, PR, stack, and attachments",
+    summary: "Show a thread's environment, PR, stack, widgets, and attachments",
     commands: [
       {
         name: "show",
         summary: "Print the Environment panel for a thread",
         usage: "bb env-panel [<thread-id>] [--refresh] [--json]",
       },
+      {
+        name: "widgets",
+        summary: "List, create, and learn about panel widgets (sub-plugins)",
+        usage: "bb env-panel widgets [list | new <name> [--template <id>] | help]",
+      },
     ],
     async run(argv, context) {
+      if (argv[0] === "widgets") return runWidgetsCommand(argv.slice(1));
       if (argv.includes("--help") || argv.includes("help")) return { exitCode: 0, stdout: usage };
       const positional = argv.filter((arg) => !arg.startsWith("--") && arg !== "show");
       const threadId = positional[0] ?? context?.threadId ?? process.env.BB_THREAD_ID;

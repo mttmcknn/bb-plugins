@@ -85,7 +85,11 @@ export function extractLinks(texts: readonly string[], limit: number): Attachmen
         continue;
       }
       if (isNoise(url)) continue;
-      if (url.hostname === "github.com") url.hash = "";
+      if (url.hostname === "github.com") {
+        url.hash = "";
+        // A clone URL and the repo page are the same reference.
+        url.pathname = url.pathname.replace(/\.git$/u, "");
+      }
       const ref = classifyUrl(url.toString().replace(/\/$/u, ""));
       if (seen.has(ref.id)) continue;
       seen.add(ref.id);

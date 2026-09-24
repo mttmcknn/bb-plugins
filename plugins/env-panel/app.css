@@ -1,0 +1,213 @@
+/*
+ * The Environment panel's surface, modeled on iOS/macOS materials:
+ * translucent regular material with background blur, a 0.5px hairline
+ * edge, continuous (squircle) corners where supported, and soft layered
+ * shadows instead of a hard offset. Docked, it rests just above the page;
+ * as an overlay it floats higher, like a popover.
+ *
+ * Colors come from BB's theme tokens. Shadows are black at low opacity in
+ * both themes, as on Apple platforms, because a shadow is the absence of
+ * light rather than a theme color.
+ */
+
+[data-env-panel-window] {
+  border-radius: 20px;
+  border: 0.5px solid var(--border-hairline, var(--border));
+  background-color: color-mix(in oklch, var(--popover) 80%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(30px);
+  backdrop-filter: saturate(180%) blur(30px);
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 0.02),
+    0 1px 2px rgb(0 0 0 / 0.04),
+    0 6px 16px -4px rgb(0 0 0 / 0.06),
+    0 18px 40px -12px rgb(0 0 0 / 0.08);
+  transform-origin: top right;
+  animation: env-panel-in 420ms cubic-bezier(0.32, 0.72, 0, 1);
+  transition: box-shadow 250ms ease;
+}
+
+/* Overlaying the chat in a narrow pane: lifted, like an iOS popover. */
+[data-env-panel-window][data-overlay] {
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 0.03),
+    0 2px 4px rgb(0 0 0 / 0.05),
+    0 12px 28px -6px rgb(0 0 0 / 0.12),
+    0 32px 64px -16px rgb(0 0 0 / 0.18);
+}
+
+/* Continuous corners: a squircle needs a larger radius to read the same. */
+@supports (corner-shape: squircle) {
+  [data-env-panel-window] {
+    border-radius: 30px;
+    corner-shape: squircle;
+  }
+}
+
+/*
+ * Dark mode: Apple lifts dark surfaces with a faint top highlight and uses
+ * deeper shadows, since low-opacity black barely shows on dark pages.
+ */
+.dark [data-env-panel-window] {
+  border-color: color-mix(in oklch, var(--ink, white) 12%, transparent);
+  background-color: color-mix(in oklch, var(--popover) 84%, transparent);
+  box-shadow:
+    inset 0 0.5px 0 rgb(255 255 255 / 0.06),
+    0 1px 2px rgb(0 0 0 / 0.30),
+    0 8px 24px -6px rgb(0 0 0 / 0.40),
+    0 24px 56px -16px rgb(0 0 0 / 0.50);
+}
+
+.dark [data-env-panel-window][data-overlay] {
+  box-shadow:
+    inset 0 0.5px 0 rgb(255 255 255 / 0.07),
+    0 2px 4px rgb(0 0 0 / 0.35),
+    0 16px 36px -8px rgb(0 0 0 / 0.55),
+    0 40px 80px -20px rgb(0 0 0 / 0.65);
+}
+
+/* Section dividers inside the panel use the same hairline as the edge. */
+[data-env-panel-window] .border-t.border-border {
+  border-top-width: 0.5px;
+}
+
+@keyframes env-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Accessibility settings Apple platforms honor, and so does the panel. */
+@media (prefers-reduced-motion: reduce) {
+  [data-env-panel-window] {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  [data-env-panel-window],
+  .dark [data-env-panel-window] {
+    background-color: var(--popover);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  [data-env-panel-window],
+  .dark [data-env-panel-window] {
+    border: 1px solid var(--border);
+  }
+}
+
+/*
+ * Control Center tiles ("platters"): a slightly lighter translucent fill on
+ * the panel's material, a hairline edge, continuous corners, and a springy
+ * press. Edit mode wiggles tiles like iOS home-screen editing.
+ */
+[data-env-panel-window] {
+  /* Four tiles across: (panel − 2×12px padding − 3×8px gaps) ÷ 4. */
+  --env-panel-tile: 80px;
+}
+
+[data-env-panel-tile] {
+  position: relative;
+  border-radius: 22px;
+  background-color: color-mix(in oklch, var(--ink, currentColor) 5%, transparent);
+  box-shadow: inset 0 0 0 0.5px color-mix(in oklch, var(--ink, currentColor) 8%, transparent);
+  transition:
+    transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    background-color 150ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@supports (corner-shape: squircle) {
+  [data-env-panel-tile] {
+    border-radius: 32px;
+    corner-shape: squircle;
+  }
+}
+
+[data-env-panel-tile]:not(:disabled):hover {
+  background-color: color-mix(in oklch, var(--ink, currentColor) 8%, transparent);
+}
+
+[data-env-panel-tile]:not(:disabled):active {
+  transform: scale(0.95);
+  transition-duration: 90ms;
+}
+
+[data-env-panel-tile]:focus-visible {
+  outline: 2px solid var(--ring, var(--primary));
+  outline-offset: 2px;
+}
+
+.dark [data-env-panel-tile] {
+  background-color: color-mix(in oklch, var(--ink, white) 7%, transparent);
+  box-shadow: inset 0 0.5px 0 rgb(255 255 255 / 0.05), inset 0 0 0 0.5px rgb(255 255 255 / 0.06);
+}
+
+.dark [data-env-panel-tile]:not(:disabled):hover {
+  background-color: color-mix(in oklch, var(--ink, white) 10%, transparent);
+}
+
+/* Tiles that need attention get a faint wash of their tone. */
+[data-env-panel-tile][data-tone="critical"] {
+  background-color: color-mix(in oklch, var(--destructive) 9%, transparent);
+}
+
+[data-env-panel-tile][data-editing] {
+  cursor: grab;
+  animation: env-panel-wiggle 280ms ease-in-out infinite alternate;
+}
+
+[data-dragging] > [data-env-panel-tile] {
+  opacity: 0.5;
+  animation: none;
+}
+
+@keyframes env-panel-wiggle {
+  from {
+    transform: rotate(-1.2deg);
+  }
+  to {
+    transform: rotate(1.2deg);
+  }
+}
+
+/* Expanding a tile zooms its detail in from the grid, like a CC module. */
+[data-env-panel-detail] {
+  animation: env-panel-expand 360ms cubic-bezier(0.32, 0.72, 0, 1);
+  transform-origin: top center;
+}
+
+@keyframes env-panel-expand {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-env-panel-tile],
+  [data-env-panel-tile][data-editing],
+  [data-env-panel-detail] {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  [data-env-panel-tile] {
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+}

@@ -29,3 +29,24 @@ Sections:
 
 This command is read-only. The panel's buttons (Commit, Ready for review, and
 the "ask agent" actions) run only when the user clicks them.
+
+## Panel widgets (sub-plugins)
+
+The panel is a Control Center-style grid. Users can add their own tiles, and
+they may ask you to write one ("add a widget that shows …"). Run
+`bb env-panel widgets help` for the full format, then:
+
+1. Start from a template: `bb env-panel widgets new <name>` (templates:
+   `basic`, `android-devices`). This writes an executable script to
+   `~/.config/bb-env-panel/widgets/`.
+2. Edit the script so it prints one JSON object (only `title` is required):
+   `value`, `caption`, `tone`, `progress`, `icon`, `items`, `url`, and up to
+   four `actions`. Set size and refresh in `# bb-widget:` comments.
+3. Test it by running the script directly, then `bb env-panel <thread-id>
+   --refresh` to see it under Widgets.
+
+Keep widgets fast (they time out after 10 seconds) and read-only. A `prompt`
+action is sent to the thread's agent only when the user clicks it.
+
+Other bb plugins can contribute tiles by publishing a discoverable RPC method
+named `env-panel.widgets.v1.render` that returns `{ widgets: [...] }`.

@@ -2,7 +2,8 @@
 // BB: `npm run preview`, then open preview/out/index.html.
 import { createRoot } from "react-dom/client";
 import type { Snapshot, StackPr } from "../core/types";
-import { PanelBody, PanelFrame, type PanelActions } from "../views/panel";
+import { PanelFrame, type PanelActions } from "../views/panel";
+import { BentoPanel, builtInTiles, widgetTiles } from "../views/bento";
 
 const titles = [
   "[checkout] Show the redesigned cart summary",
@@ -94,6 +95,17 @@ const snapshot: Snapshot = {
     context: { usedTokens: 84_000, windowTokens: 200_000 },
     backgroundTasks: ["./gradlew :feature:checkout:testDebugUnitTest"],
   }),
+  subagents: ok([
+    { id: "sa-1", label: "Audit order summary accessibility", kind: "delegation", status: "done", threadId: null, providerId: null, summary: "No blocking issues.", background: true, startedAt: Date.now() - 400_000, endedAt: Date.now() - 200_000 },
+    { id: "sa-2", label: "Check TalkBack order", kind: "delegation", status: "done", threadId: null, providerId: null, summary: null, background: true, startedAt: Date.now() - 300_000, endedAt: Date.now() - 100_000 },
+    { id: "sa-3", label: "Verify screen recreation", kind: "delegation", status: "running", threadId: null, providerId: null, summary: null, background: true, startedAt: Date.now() - 90_000, endedAt: null },
+  ]),
+  scheduled: ok([
+    { id: "a1", name: "Monitor checkout stack", enabled: true, schedule: "Every 10 minutes", nextRunAt: Date.now() + 4 * 60_000, lastRunAt: Date.now() - 6 * 60_000, lastRunStatus: "succeeded", lastRunThreadId: null, runCount: 12, relation: "targets" },
+  ]),
+  widgets: ok([
+    { key: "script:android-devices:main", source: { kind: "script", name: "android-devices" }, title: "Devices", icon: "android", size: "wide", value: "3", caption: "3 ready of 3", tone: "positive", error: null, items: [{ label: "Pixel 9 API 36", detail: "Emulator · device", tone: "positive" }] },
+  ]),
   attachments: ok({
     enriching: false,
     storageTruncated: false,
@@ -122,12 +134,7 @@ const snapshot: Snapshot = {
             estimate: 3,
             dueDate: "2026-09-30",
             description:
-              "## Goal
-Screen readers announce the order total **politely** when it changes, without re-reading the whole summary.
-
-- Live region for the total
-- Stable focus after payment
-- `contentDescription` for line items",
+              "## Goal\nScreen readers announce the order total **politely** when it changes, without re-reading the whole summary.\n\n- Live region for the total\n- Stable focus after payment\n- `contentDescription` for line items",
             children: [
               { identifier: "ENG-422", title: "Screen reader announcements", stateType: "completed" },
               { identifier: "ENG-423", title: "Focus restore after payment", stateType: "started" },
@@ -209,6 +216,8 @@ const actions: PanelActions = {
   Thumbnail: ({ className, fallback }) =>
     fallback ?? <span className={className} style={{ background: "linear-gradient(135deg, #3b4252, #5e6ad2)" }} />,
   copy: () => undefined,
+  openThread: () => undefined,
+  widgetAction: () => undefined,
   commit: () => undefined,
   markReady: () => undefined,
   askAgent: () => undefined,
@@ -217,8 +226,8 @@ const actions: PanelActions = {
 
 createRoot(document.getElementById("root")!).render(
   <div className="h-screen bg-background">
-    <PanelFrame style={{ left: 16, top: 16, width: 340 }} loading={false} updatedLabel="just now" onRefresh={() => undefined} onClose={() => undefined}>
-      <PanelBody snapshot={snapshot} actions={actions} />
+    <PanelFrame docked style={{ left: 16, top: 16, width: 368 }} loading={false} updatedLabel="just now" onRefresh={() => undefined} onClose={() => undefined}>
+      <BentoPanel tiles={[...builtInTiles(snapshot, actions), ...widgetTiles(snapshot, actions)]} editing={false} />
     </PanelFrame>
   </div>,
 );

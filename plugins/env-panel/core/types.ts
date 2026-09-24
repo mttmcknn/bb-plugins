@@ -82,6 +82,39 @@ export interface AgentInfo {
   backgroundTasks: string[];
 }
 
+// ---- Subagents and schedules ----------------------------------------------
+
+export interface Subagent {
+  id: string;
+  label: string;
+  /** A BB child thread, or a subagent the provider delegated to within this thread. */
+  kind: "thread" | "delegation";
+  status: "pending" | "running" | "done" | "failed" | "stopped";
+  /** Set for child threads, so the panel can open them. */
+  threadId: string | null;
+  providerId: string | null;
+  summary: string | null;
+  background: boolean;
+  /** Epoch milliseconds; `endedAt` is null while it runs. */
+  startedAt: number | null;
+  endedAt: number | null;
+}
+
+export interface ScheduledItem {
+  id: string;
+  name: string;
+  enabled: boolean;
+  /** Plain English when possible: "Every 10 minutes". */
+  schedule: string;
+  nextRunAt: number | null;
+  lastRunAt: number | null;
+  lastRunStatus: string | null;
+  lastRunThreadId: string | null;
+  runCount: number;
+  /** How it relates to this thread: it re-prompts it, or this thread created it. */
+  relation: "targets" | "created";
+}
+
 // ---- Attachments --------------------------------------------------------
 
 interface RefBase {
@@ -180,5 +213,9 @@ export interface Snapshot {
   pullRequest: Section<PullRequestInfo | null>;
   stack: Section<StackInfo | null>;
   agent: Section<AgentInfo>;
+  subagents: Section<Subagent[]>;
+  scheduled: Section<ScheduledItem[]>;
   attachments: Section<AttachmentsInfo>;
+  /** Tiles from sub-plugins: script widgets and other bb plugins. */
+  widgets: Section<import("./widgets.ts").Widget[]>;
 }

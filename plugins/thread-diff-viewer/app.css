@@ -1,0 +1,20 @@
+.tdv-root { display: flex; flex-direction: column; height: 100%; min-height: 0; color: var(--foreground); }
+.tdv-toolbar { display: flex; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.tdv-filter-wrap { position: relative; flex: 1; }
+.tdv-filter-button { display: flex; align-items: center; justify-content: space-between; width: 100%; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--foreground); padding: 7px 10px; text-align: left; }
+.tdv-filter-button:hover, .tdv-refresh:hover, .tdv-menu button:hover, .tdv-toggle button:hover { background: var(--accent); }
+.tdv-refresh { border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--foreground); padding: 7px 12px; }
+.tdv-menu { position: absolute; z-index: 20; top: calc(100% + 4px); left: 0; right: 0; padding: 5px; border: 1px solid var(--border); border-radius: 14px; background: var(--popover); box-shadow: 0 8px 24px rgb(0 0 0 / .18); }
+.tdv-menu button { display: flex; justify-content: space-between; width: 100%; border: 0; border-radius: 7px; background: transparent; color: var(--popover-foreground); padding: 9px 10px; text-align: left; }
+.tdv-menu-separator { border-top: 1px solid var(--border) !important; border-radius: 0 !important; margin-top: 5px; padding-top: 14px !important; }
+.tdv-content { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
+.tdv-file { margin-bottom: 12px; overflow: hidden; border: 1px solid var(--border); border-radius: 9px; background: var(--card); }
+.tdv-file-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; padding: 7px 9px; border-bottom: 1px solid var(--border); }
+.tdv-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 12px ui-monospace, SFMono-Regular, monospace; }
+.tdv-toggle { display: flex; flex: none; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.tdv-toggle button { border: 0; background: transparent; color: var(--muted-foreground); padding: 4px 7px; font-size: 11px; }
+.tdv-toggle button[aria-pressed="true"] { background: var(--accent); color: var(--foreground); }
+.tdv-patch { overflow-x: auto; }
+.tdv-markdown { padding: 12px 14px; overflow-wrap: anywhere; }
+.tdv-note { margin: 12px; color: var(--muted-foreground); font-size: 12px; }
+.tdv-error { margin: 12px; color: var(--destructive); font-size: 12px; white-space: pre-wrap; }
