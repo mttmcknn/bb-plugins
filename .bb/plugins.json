@@ -1,0 +1,11 @@
+{
+  "$schema": "https://getbb.app/schemas/plugins.schema.json",
+  "schemaVersion": 1,
+  "name": "mttmcknn-bb-plugins",
+  "plugins": [
+    { "name": "android-emulator", "source": "./plugins/android-emulator" },
+    { "name": "env-panel", "source": "./plugins/env-panel" },
+    { "name": "inbox", "source": "./plugins/inbox" },
+    { "name": "pr-stacks", "source": "./plugins/pr-stacks" }
+  ]
+}

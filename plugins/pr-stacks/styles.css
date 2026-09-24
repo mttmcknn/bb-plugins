@@ -1,0 +1,70 @@
+/* A soft highlight sweeping across a stack segment while its checks run. */
+@keyframes pr-stacks-checks-running {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.pr-stacks-checks-running {
+  animation: pr-stacks-checks-running 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pr-stacks-checks-running {
+    animation: none;
+  }
+}
+
+/*
+ * Hovering the stack bar: the other segments step back, and the hovered one
+ * grows with a slight spring and brightens. Keyboard focus does the same.
+ */
+.pr-stacks-segment {
+  transition: opacity 200ms ease-out;
+}
+
+.pr-stacks-bar:hover .pr-stacks-segment:not(:hover),
+.pr-stacks-bar:has(.pr-stacks-segment:focus-visible) .pr-stacks-segment:not(:focus-visible) {
+  opacity: 0.55;
+}
+
+.pr-stacks-segment-bar {
+  transition:
+    height 240ms cubic-bezier(0.34, 1.56, 0.64, 1),
+    filter 200ms ease-out;
+}
+
+.pr-stacks-segment:hover .pr-stacks-segment-bar,
+.pr-stacks-segment:focus-visible .pr-stacks-segment-bar {
+  filter: brightness(1.15) saturate(1.1);
+}
+
+/* The PR a minimized stack reveals under its bar eases in. */
+@keyframes pr-stacks-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.pr-stacks-reveal > li {
+  animation: pr-stacks-reveal 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pr-stacks-segment,
+  .pr-stacks-segment-bar {
+    transition: none;
+  }
+
+  .pr-stacks-reveal > li {
+    animation: none;
+  }
+}
